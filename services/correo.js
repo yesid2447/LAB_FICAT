@@ -3,7 +3,20 @@ import { Notificacion } from "../models/negocio.js";
 import { esc } from "../helpers/utils.js";
 
 let transporte;
-const configurado = () => process.env.GMAIL_USER && process.env.GMAIL_APP_PASSWORD;
+const configurado = () => process.env.BREVO_API_KEY || (process.env.GMAIL_USER && process.env.GMAIL_APP_PASSWORD);
+
+/** Envio por HTTPS (Brevo). Sirve donde el hosting bloquea SMTP (p. ej. Render gratis). */
+async function enviarPorBrevo({ para, asunto, html }) {
+  const remitente = process.env.MAIL_FROM || process.env.GMAIL_USER;
+  const r = await fetch("https://api.brevo.com/v3/smtp/email", {
+    method: "POST",
+    headers: { "api-key": process.env.BREVO_API_KEY, "Content-Type": "application/json", accept: "application/json" },
+    body: JSON.stringify({ sender: { name: "LABFICAT SENA", email: remitente }, to: [{ email: para }], replyTo: { email: process.env.MAIL_REPLY_TO || remitente }, subject: asunto, htmlContent: html }),
+    signal: AbortSignal.timeout(20000),
+  });
+  if (!r.ok) throw new Error(`Brevo ${r.status}: ${(await r.text()).slice(0, 200)}`);
+}
+
 function getTransporte() {
   if (!transporte) transporte = nodemailer.createTransport({ service: "gmail", auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_APP_PASSWORD } });
   return transporte;
@@ -20,7 +33,7 @@ const contactoLab = () => `
  * Envia un correo (unico canal) y guarda una fila en Notificaciones.
  * El cuerpo es SOLO un aviso con enlace: nunca cedula, valores, resultados ni adjuntos.
  * Excepciones permitidas por diseno: clave inicial y codigos de verificacion.
- * Modo simulado si faltan GMAIL_USER / GMAIL_APP_PASSWORD (imprime en consola).
+ * Modo simulado si faltan las claves de correo (imprime en consola).
  */
 export async function enviarCorreo({ para, asunto, titulo, parrafos = [], boton, tipo, id_cliente = null, id_usuario = null, tabla_referencia, id_referencia, incluirContacto = true }) {
   const html = `<div style="font-family:Arial,sans-serif;max-width:520px;color:#1b2a22">
@@ -34,7 +47,8 @@ export async function enviarCorreo({ para, asunto, titulo, parrafos = [], boton,
       console.log(`\n[CORREO SIMULADO] Para: ${para}\nAsunto: ${asunto}\n${html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ")}\n${boton ? "Enlace: " + boton.url : ""}\n`);
       return await Notificacion.create({ ...noti, estado_envio: "simulado" });
     }
-    await getTransporte().sendMail({
+    if (process.env.BREVO_API_KEY) await enviarPorBrevo({ para, asunto, html });
+    else await getTransporte().sendMail({
       from: `"LABFICAT SENA" <${process.env.GMAIL_USER}>`, to: para, subject: asunto, html,
       replyTo: process.env.MAIL_REPLY_TO || "labficat@sena.edu.co",
     });
